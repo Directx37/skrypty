@@ -1,5 +1,5 @@
 - name: Stopniowy restart Redis z walidacją certyfikatu
-  hosts: redis_cluster
+  hosts: all
   serial: 1
   become: true
 
@@ -8,59 +8,33 @@
 
   tasks:
 
-    - name: Sprawdź datę ważności certyfikatu (przed)
-      command: "openssl x509 -enddate -noout -in {{ cert_path }}"
-      register: cert_expiry_raw_before
+    - name: Pobierz timestamp daty ważności certyfikatu (przed)
+      shell: "date -d \"$(openssl x509 -enddate -noout -in {{ cert_path }} | cut -d= -f2)\" +%s"
+      register: cert_expiry_ts_before
       failed_when: false
       changed_when: false
 
-    - name: Przetwórz datę ważności certyfikatu na timestamp (przed)
-      set_fact:
-        cert_expiry_ts_before: >-
-          {{
-            cert_expiry_raw_before.stdout
-            | regex_search('notAfter=(.*)', '\\1')
-            | trim
-            | to_datetime('%b %d %H:%M:%S %Y %Z')
-            | int
-          }}
-
-    - name: Wyznacz datę + 1 rok (sekundy)
-      set_fact:
-        one_year_from_now_ts: >-
-          {{
-            (ansible_date_time.iso8601 | to_datetime('%Y-%m-%dT%H:%M:%S%z') + timedelta(days=365)).timestamp() | int
-          }}
+    - name: Pobierz timestamp daty +1 rok (teraz + 365 dni)
+      shell: "date -d '+365 days' +%s"
+      register: one_year_from_now_ts
 
     - name: Sprawdź czy certyfikat wygasa w ciągu roku
       set_fact:
-        cert_needs_renewal: "{{ cert_expiry_ts_before < one_year_from_now_ts }}"
+        cert_needs_renewal: "{{ cert_expiry_ts_before.stdout | int < one_year_from_now_ts.stdout | int }}"
 
     - name: Odnów certyfikat jeśli wygasa w ciągu roku
       shell: "/app/scripts/renew_redis_cert.sh"
       when: cert_needs_renewal
 
-    - name: Sprawdź datę ważności certyfikatu (po odnowieniu)
-      command: "openssl x509 -enddate -noout -in {{ cert_path }}"
-      register: cert_expiry_raw_after
-      when: cert_needs_renewal
-
-    - name: Przetwórz datę certyfikatu na timestamp (po odnowieniu)
-      set_fact:
-        cert_expiry_ts_after: >-
-          {{
-            cert_expiry_raw_after.stdout
-            | regex_search('notAfter=(.*)', '\\1')
-            | trim
-            | to_datetime('%b %d %H:%M:%S %Y %Z')
-            | int
-          }}
+    - name: Pobierz timestamp daty ważności certyfikatu (po odnowieniu)
+      shell: "date -d \"$(openssl x509 -enddate -noout -in {{ cert_path }} | cut -d= -f2)\" +%s"
+      register: cert_expiry_ts_after
       when: cert_needs_renewal
 
     - name: Sprawdź czy certyfikat został poprawnie odnowiony
       fail:
         msg: "❌ Certyfikat nie został odnowiony — daty są takie same!"
-      when: cert_needs_renewal and cert_expiry_ts_before == cert_expiry_ts_after
+      when: cert_needs_renewal and (cert_expiry_ts_before.stdout | int == cert_expiry_ts_after.stdout | int)
 
     - name: Restart Redis (jeśli certyfikat był odnowiony)
       ansible.builtin.systemd:
