@@ -34,33 +34,45 @@ def check_connection():
         time.sleep(2)
 
 def insert_worker():
-    with psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
-        user=PG_USER, password=PG_PASSWORD
-    ) as conn:
-        with conn.cursor() as cur:
-            i = 0
-            while not stop_event.is_set():
-                values = [("user_" + str(i + j)) for j in range(INSERT_BATCH)]
-                args_str = ",".join(cur.mogrify("(%s)", (v,)).decode() for v in values)
-                cur.execute(f"INSERT INTO {SCHEMA_NAME}.test_table (name) VALUES {args_str}")
-                conn.commit()
-                i += INSERT_BATCH
-                print(f"[INSERT] +{INSERT_BATCH} (total {i})")
-                time.sleep(0.1)
+    i = 0
+    while not stop_event.is_set():
+        try:
+            with psycopg2.connect(
+                host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
+                user=PG_USER, password=PG_PASSWORD,
+                connect_timeout=3
+            ) as conn:
+                with conn.cursor() as cur:
+                    while not stop_event.is_set():
+                        values = [("user_" + str(i + j)) for j in range(INSERT_BATCH)]
+                        args_str = ",".join(cur.mogrify("(%s)", (v,)).decode() for v in values)
+                        cur.execute(f"INSERT INTO {SCHEMA_NAME}.test_table (name) VALUES {args_str}")
+                        conn.commit()
+                        i += INSERT_BATCH
+                        print(f"[INSERT] +{INSERT_BATCH} (total {i})")
+                        time.sleep(0.1)
+        except OperationalError as e:
+            print(f"[INSERT] ❌ Połączenie utracone: {e}")
+            time.sleep(2)
 
 def select_worker():
-    with psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
-        user=PG_USER, password=PG_PASSWORD
-    ) as conn:
-        with conn.cursor() as cur:
-            while not stop_event.is_set():
-                rand_id = random.randint(1, 100_000)
-                cur.execute(f"SELECT name FROM {SCHEMA_NAME}.test_table WHERE id = %s", (rand_id,))
-                cur.fetchone()
-                print(f"[SELECT] id={rand_id}")
-                time.sleep(0.05)
+    while not stop_event.is_set():
+        try:
+            with psycopg2.connect(
+                host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
+                user=PG_USER, password=PG_PASSWORD,
+                connect_timeout=3
+            ) as conn:
+                with conn.cursor() as cur:
+                    while not stop_event.is_set():
+                        rand_id = random.randint(1, 100_000)
+                        cur.execute(f"SELECT name FROM {SCHEMA_NAME}.test_table WHERE id = %s", (rand_id,))
+                        cur.fetchone()
+                        print(f"[SELECT] id={rand_id}")
+                        time.sleep(0.05)
+        except OperationalError as e:
+            print(f"[SELECT] ❌ Połączenie utracone: {e}")
+            time.sleep(2)
 
 def setup_schema():
     with psycopg2.connect(
@@ -85,26 +97,4 @@ def cleanup_schema():
     ) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(f"DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE;")
-        print("🧹 Schemat usunięty.")
-
-if __name__ == "__main__":
-    try:
-        print(f"▶️ Przygotowywanie schematu {SCHEMA_NAME} w bazie {DB_NAME}...")
-        setup_schema()
-
-        print(f"▶️ Start testu ({RUN_DURATION} sek)...")
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            executor.submit(insert_worker)
-            executor.submit(select_worker)
-            executor.submit(check_connection)
-
-            time.sleep(RUN_DURATION)
-            stop_event.set()
-            print("⏹️ Zatrzymywanie...")
-
-        print("✅ Test zakończony.")
-
-    finally:
-        print("🧹 Usuwanie testowego schematu...")
-        cleanup_schema()
+            cur.execute(f"DROP SCHEMA I
