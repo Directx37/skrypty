@@ -97,4 +97,26 @@ def cleanup_schema():
     ) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(f"DROP SCHEMA I
+            cur.execute(f"DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE;")
+        print("🧹 Schemat usunięty.")
+
+if __name__ == "__main__":
+    try:
+        print(f"▶️ Przygotowywanie schematu {SCHEMA_NAME} w bazie {DB_NAME}...")
+        setup_schema()
+
+        print(f"▶️ Start testu ({RUN_DURATION} sek)...")
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            executor.submit(insert_worker)
+            executor.submit(select_worker)
+            executor.submit(check_connection)
+
+            time.sleep(RUN_DURATION)
+            stop_event.set()
+            print("⏹️ Zatrzymywanie...")
+
+        print("✅ Test zakończony.")
+
+    finally:
+        print("🧹 Usuwanie testowego schematu...")
+        cleanup_schema()
