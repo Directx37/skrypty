@@ -11,24 +11,20 @@ PG_HOST = "localhost"
 PG_PORT = 5432
 PG_USER = "postgres"
 PG_PASSWORD = "postgres"
-PG_BASE_DB = "postgres"
-CONNECT_TIMEOUT = 3
-
-# Testowa baza i tabela
-TEST_DB_NAME = "test_db_" + ''.join(random.choices(string.ascii_lowercase, k=6))
-RUN_DURATION = 30  # czas testu w sekundach
+DB_NAME = "postgres"
+SCHEMA_NAME = "test_schema"
+RUN_DURATION = 30  # sekundy
 INSERT_BATCH = 100
 
-# Flaga stopu dla wszystkich wątków
 stop_event = threading.Event()
 
 def check_connection():
     while not stop_event.is_set():
         try:
             with psycopg2.connect(
-                host=PG_HOST, port=PG_PORT, dbname=TEST_DB_NAME,
+                host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
                 user=PG_USER, password=PG_PASSWORD,
-                connect_timeout=CONNECT_TIMEOUT
+                connect_timeout=3
             ) as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1")
@@ -39,16 +35,15 @@ def check_connection():
 
 def insert_worker():
     with psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=TEST_DB_NAME,
-        user=PG_USER, password=PG_PASSWORD,
-        connect_timeout=CONNECT_TIMEOUT
+        host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
+        user=PG_USER, password=PG_PASSWORD
     ) as conn:
         with conn.cursor() as cur:
             i = 0
             while not stop_event.is_set():
                 values = [("user_" + str(i + j)) for j in range(INSERT_BATCH)]
                 args_str = ",".join(cur.mogrify("(%s)", (v,)).decode() for v in values)
-                cur.execute(f"INSERT INTO test_table (name) VALUES {args_str}")
+                cur.execute(f"INSERT INTO {SCHEMA_NAME}.test_table (name) VALUES {args_str}")
                 conn.commit()
                 i += INSERT_BATCH
                 print(f"[INSERT] +{INSERT_BATCH} (total {i})")
@@ -56,58 +51,49 @@ def insert_worker():
 
 def select_worker():
     with psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=TEST_DB_NAME,
-        user=PG_USER, password=PG_PASSWORD,
-        connect_timeout=CONNECT_TIMEOUT
+        host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
+        user=PG_USER, password=PG_PASSWORD
     ) as conn:
         with conn.cursor() as cur:
             while not stop_event.is_set():
                 rand_id = random.randint(1, 100_000)
-                cur.execute("SELECT name FROM test_table WHERE id = %s", (rand_id,))
+                cur.execute(f"SELECT name FROM {SCHEMA_NAME}.test_table WHERE id = %s", (rand_id,))
                 cur.fetchone()
                 print(f"[SELECT] id={rand_id}")
                 time.sleep(0.05)
 
-def create_test_db():
+def setup_schema():
     with psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=PG_BASE_DB,
+        host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
         user=PG_USER, password=PG_PASSWORD
     ) as conn:
-        conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(f"CREATE DATABASE {TEST_DB_NAME};")
-
-def drop_test_db():
-    with psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=PG_BASE_DB,
-        user=PG_USER, password=PG_PASSWORD
-    ) as conn:
-        conn.autocommit = True
-        with conn.cursor() as cur:
+            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME};")
             cur.execute(f"""
-                SELECT pg_terminate_backend(pid)
-                FROM pg_stat_activity
-                WHERE datname = %s AND pid <> pg_backend_pid();
-            """, (TEST_DB_NAME,))
-            time.sleep(1)
-            cur.execute(f"DROP DATABASE IF EXISTS {TEST_DB_NAME};")
+                CREATE TABLE IF NOT EXISTS {SCHEMA_NAME}.test_table (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT
+                );
+            """)
+        conn.commit()
+        print("✔️ Schemat i tabela przygotowane.")
 
-def init_test_table():
+def cleanup_schema():
     with psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=TEST_DB_NAME,
+        host=PG_HOST, port=PG_PORT, dbname=DB_NAME,
         user=PG_USER, password=PG_PASSWORD
     ) as conn:
+        conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("CREATE TABLE test_table (id SERIAL PRIMARY KEY, name TEXT);")
-        conn.commit()
+            cur.execute(f"DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE;")
+        print("🧹 Schemat usunięty.")
 
 if __name__ == "__main__":
     try:
-        print(f"▶️ Tworzenie testowej bazy: {TEST_DB_NAME}")
-        create_test_db()
-        init_test_table()
+        print(f"▶️ Przygotowywanie schematu {SCHEMA_NAME} w bazie {DB_NAME}...")
+        setup_schema()
 
-        print(f"▶️ Uruchamianie testu na {RUN_DURATION} sekund...")
+        print(f"▶️ Start testu ({RUN_DURATION} sek)...")
         with ThreadPoolExecutor(max_workers=3) as executor:
             executor.submit(insert_worker)
             executor.submit(select_worker)
@@ -115,10 +101,10 @@ if __name__ == "__main__":
 
             time.sleep(RUN_DURATION)
             stop_event.set()
-            print("⏹️ Zatrzymywanie wątków...")
+            print("⏹️ Zatrzymywanie...")
 
-        print("✅ Test zakończony")
+        print("✅ Test zakończony.")
 
     finally:
-        print("🧹 Usuwanie bazy testowej...")
-        drop_test_db()
+        print("🧹 Usuwanie testowego schematu...")
+        cleanup_schema()
