@@ -1,0 +1,5 @@
+<% if @settings['loadmodule'].is_a?(Array) && @settings['loadmodule'].any? %>
+<% @settings['loadmodule'].each do |mod| %>
+loadmodule <%= mod %>
+<% end %>
+<% end %>
